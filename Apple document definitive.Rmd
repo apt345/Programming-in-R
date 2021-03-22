@@ -1,0 +1,1001 @@
+---
+title: "Project R: Understanding Apple demand: Quantitative study"
+author: "Arturo Prieto & Pere Fuster"
+date: "21/10/2020"
+output: word_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Abstract
+
+This study is presented as the project of Programming in R for the first
+quarter of the MSc in Statistics for Data Science at UC3M.
+
+tb.n \<- fdt\_cat(as.factor(apple\$class))
+
+summary(tb.n, format=TRUE, pattern='%.3f')
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set-up
+
+The first thing needed to start is to load all the libraries needed, and import the data. The background is set for the figures shown along the report.  
+
+```{r setup2, warning=FALSE, message=FALSE, echo = TRUE}
+library(tidyverse)
+library(readr)
+library(caret)
+library(randomForest) 
+library(e1071) 
+library(agricolae)
+library(fdth)
+library(hrbrthemes)
+library(gmodels)
+library(reshape2)
+library(skimr)
+library(class)
+library(mlogit)
+library(nnet)
+library(caretEnsemble)
+library(earth)
+library(xgboost)
+library(Hmisc)
+library(maps)
+library(viridis)
+library(doParallel)
+library(gtable)
+library(gridExtra)
+library("tictoc")
+
+apple = as_tibble(read.table("C:/Users/arpri/OneDrive/Escritorio/libros/master/primer semicuatrimestre/Programación en r/proyecto/apple_data.txt", quote="\"", comment.char="")) 
+descriptions = read_csv("C:/Users/arpri/OneDrive/Escritorio/libros/master/primer semicuatrimestre/Programación en r/proyecto/descriptions.txt")
+names(apple) = descriptions$Variable
+
+theme_set(theme_classic())
+```
+
+# Introduction
+
+In this project we are interested in understanding the demand of
+ecological apples in the US. For that purpose we have utilised the
+"Apple\_data.txt" dataset, which was utilised for the doctoral
+dissertation of Jeffrey Blend at Department of Agricultural Economics of
+Michigan State University, in 1998.
+
+This project consists in first analising visually how variables interact
+with each other through graphical observation and crossed-tabulation,
+to then proceed with a regression analysis and a Random forest which
+will give us the coefficient values and the variable importance. From
+this results we will be able to appreciate the importance of key
+variables.
+
+Finally we will build additional machine learning algorithms and
+ensembles to build a classificator for ecological apples choice. A
+multinomial model is also proposed but without ensembling.
+
+# Data observation preprocessing
+
+Data were obtained from a telephone survey conducted by the Institute
+for Public Policy and Social Research at MSU. It contains 660 sample
+units. It is similar to a true experimental data set in the sense that
+the price pairs facing a family are randomly determined (we will check
+for this). In other words, the family head was presented with prices for
+the eco-labelled and regular apples, and then asked how much of each
+kind of apple the family would buy at the given prices.
+
+The pre-analysis variable layout is the following:
+
+```{r layout, }
+frame()
+title("Description of the Initial Variables")
+grid.table(descriptions)
+```
+
+```{r exploration, warning=FALSE}
+skim(apple)
+
+apple = apple[, -1] # We remove id because this is not panel data, and individuals jut give one value, so there's no use of this variable if we have only one table. 
+
+apple = apple[, -2] # we remove dates. In season variable is already in the dataset and will be utilised
+```
+
+As we can see in the n\_missing component of the skim function on apple,
+there are no Empty values for any variables of our dataset.
+
+```{r initialq, echo=FALSE, warning=FALSE}
+apple = apple %>% 
+  mutate(multinom = as.factor(ifelse(ecolbs == 0 & reglbs > 0, 1, 
+            ifelse(ecolbs == 1 & reglbs == 1, 2,
+                ifelse(ecolbs > 0 & reglbs == 0, 3, 4))))) %>%
+  mutate(class = as.factor(ifelse(multinom == 1, "Only Regular",
+            ifelse(multinom == 2, "Both",
+                ifelse(multinom == 3, "Only Ecological", "Not purchaser")))),
+         mlogit = as.factor(ifelse(multinom == 1, "Only Regular",
+            ifelse(multinom == 2, "Both",
+                ifelse(multinom == 3, "Only Ecological", "A_Not_purchaser")))),
+         customer = as.factor(ifelse(class == "Not purchaser", "Not purchaser", "Purchaser")),
+         Regular = as.factor(ifelse(reglbs > 0, 1, 0)), 
+         Ecological = as.factor(ifelse(ecolbs > 0, 1, 0)),
+         total = reglbs + ecolbs,
+         adults = hhsize - numlt5 - num5_17,
+         incomepa = faminc / adults)
+
+
+categorical = apple %>%
+  select(inseason, male, Regular, Ecological)
+
+factors = apple %>%
+  select_if(is.factor)
+
+numerical = apple %>%
+  select_if(is.numeric)
+
+numerical_summaries = as_tibble(lapply(numerical, function(x) c(mean(x), sd(x), skewness(x), kurtosis(x))))
+categorical_summaries = as_tibble(lapply(numerical, function(x) c(mean(x), sd(x), skewness(x), kurtosis(x))))
+  
+apple_chart = apple %>% 
+   rename("Years of schooling" = educ) %>%
+   rename(State = state) %>%
+   rename("Price of regular apples" = regprc) %>%
+   rename("Price of ecolabeled apples" = ecoprc) %>%
+   rename("In season" = inseason) %>%
+   rename("household size" = hhsize) %>%
+   rename(Male = male) %>%
+   rename("Family income" = faminc) %>%
+   rename(Age = age) %>%
+   rename("Quantity regular apples" = reglbs) %>%
+   rename("Quantity ecolabeled apples" = ecolbs) %>%
+   rename("Number of youngers than 5" = numlt5) %>%
+   rename("Number of memebrs between 18 and 64" = num5_17) %>%
+   rename("Number of memebrs between 5 and 17" = num18_64) %>%
+   rename("Number of olders than 64" = numgt64)
+```
+
+# Start of Analysis: Descriptive study
+
+## Univariate descriptive study
+
+### Intro
+
+CHECK EVERYTHINIG JUANMI ASKED FOR IS DONE HERE
+
+First part is about showing what the study will be about, and we here
+explain the distribution of the total demand of apple
+
+Sales is a particular variable. It is not real, and comes from an
+scenario where people are proposed random prices. Therefore,
+interpreting this in terms of apple demand is no fruitful. However, it's
+worth looking at this variable which is what will enable us to
+understand better how apple demand works.
+
+The pie chart, does not tell us much, but it's a good way to understand
+if people really want apples. We had that 95% of the subjects would have
+gone home with at least one apple, which suggests that apples are a
+basic good in the US.
+
+```{r demands, warning=FALSE}
+
+pie = apple %>%
+  mutate(customer2 = as.numeric(ifelse(customer == "Purchaser", 2, 1))) %>%
+  group_by(customer) %>%
+  summarise(weight = sum(customer2/customer2)/nrow(apple), name = ifelse(weight > 0.5, "Customer", "No customer"), lab.ypos = cumsum(weight) - 0.5*weight)
+
+ggplot(pie, aes(x = "", y = weight, fill = name)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  coord_polar("y", start = 0)+
+  geom_text(aes(label=round(weight * 100,digits=3), y = lab.ypos, label = weight), color = "white")+
+  scale_fill_manual(values = c("blue3", "#868686FF")) +
+  theme_void() +
+    labs(title="Proportion of people going away with apples", 
+       subtitle="16.36% of the subjects when away not purchasing anything",
+       caption="Source: MC University")
+
+# Represent it
+apple %>%
+    ggplot(aes(x=total)) +
+    geom_density(fill="blue3", alpha=1.9) +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+    theme_ipsum() +
+    labs(title="Density plot", 
+       subtitle="Quantity puchased at the trial",
+       caption="Source: MC University",
+       x="Sales (USD)",
+       fill="Quantity purchased (lbs)")
+
+apple %>%
+  ggplot(aes(x=total)) +
+    geom_boxplot(fill='#A4A4A4', color="black") +
+    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+    theme_ipsum() +
+    labs(title="Box-plot", 
+       subtitle="Many extreme cases have appeard at the trial",
+       caption="Source: MC University", 
+       x = "Quantity purchased (lbs)")
+
+```
+
+### Continous variables
+
+We can summarize multiple samples of a random variable in a histogram.
+Here we want to carefully construct histograms so that they resemble the
+area under the pdf.
+
+-   Variables: Income, total quantity of apples, years of education,
+    price
+
+```{r incomed, warning=FALSE}
+a = apple %>%
+  ggplot( aes(x=incomepa)) +
+    geom_histogram(binwidth = 10, fill="#69b3a2", color="aquamarine4",     alpha=0.9) +
+    ggtitle("Household income") +
+    theme_ipsum() +
+    geom_vline(aes(xintercept = mean(incomepa)), linetype = 2) + 
+    theme(
+      plot.title = element_text(size=15)
+    )
+
+b = ggplot(apple, aes(incomepa, stat(density))) +
+  geom_histogram(bins = 20, fill="#69b3a2", color="aquamarine4")  +
+  geom_density(fill="#69b3a2", color="#e9ecef", alpha=0.6) +
+  ggtitle("Household income Density") +
+  theme_ipsum() + theme(plot.margin = unit(c(0.5,1,0,0), "cm"),
+      plot.title = element_text(size=11)
+    ) +
+  geom_vline(aes(xintercept = mean(incomepa)), linetype = 2)
+
+
+c = apple %>%
+  ggplot(aes(x=incomepa)) +
+    geom_boxplot() +
+    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+    theme_ipsum() +
+    theme(
+      plot.margin = unit(c(0,1,0,1), "cm"),
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    ggtitle("Income Box-Plot") +
+    xlab("")
+
+library(gridExtra)
+grid.arrange(arrangeGrob(a, b, ncol=2), c, nrow = 2)
+
+```
+
+The horizontal lines in the box represent Q1, Q2 (the median). The
+median is denoted by the dark line, which lines up with \$13,592 on the
+vertical axis for price and 36,385 mi. on the vertical axis for mileage.
+
+The minimum and maximum are illustrated using the whiskers that extend
+below and above the box; however, it is convention to only allow the
+whiskers to extend to a minimum or maximum of 1.5 times the IQR below Q1
+or above Q3. Any values that fall beyond this threshold can be
+considered outliers and are denoted as circles. We will probably remove
+only the highest value, and for the econometric model, we'll use a
+logarithmic functional form as we might expect a decreasing income
+effect magnitude for higher values.
+
+```{r income_transf, warning=FALSE}
+apple = apple %>%
+  select(incomepa, everything()) %>%
+  arrange(incomepa) %>%
+  mutate(logincomepa = log(incomepa))
+
+apple = apple[-nrow(apple),]
+```
+
+```{r price2, warning=FALSE}
+data1 = apple %>%
+      mutate(apple = "Regular", price = regprc) %>%
+      select(apple, price)
+  
+data2 = apple %>%
+      mutate(apple = "Ecological", price = ecoprc) %>%
+      select(apple, price)
+  
+density = rbind(data1, data2)
+
+table(apple$regprc)
+table(apple$ecoprc)
+# We knew this numerica variable would take a clear finite number of values, but we see it's quite limited. Having just three different prices for regular apples. We will keep considering it numeric, since it is, but will be plotted through frequency
+  
+# Represent it
+density %>%
+    ggplot(aes(x=price, fill=apple)) +
+    geom_histogram(color="#e9ecef", alpha=0.7, position = 'identity', bins = 9) + 
+    geom_density(color="#e9ecef", alpha=0.7, position = 'identity', bins = 100) +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+    theme_ipsum() +
+    labs(title="Density plot", 
+       subtitle="City Mileage Grouped by Number of cylinders",
+       caption="Source: mpg",
+       x="City Mileage",
+       fill="Type of apple")
+
+density %>%
+  ggplot( aes(x=apple, y=price, fill=apple)) +
+    geom_boxplot() +
+    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+    geom_jitter(color="black", size=0.4, alpha=0.9) +
+    theme_ipsum() +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    ggtitle("A boxplot with jitter") +
+    xlab("")
+
+```
+
+Overall we appreciated that there wasn't a big variation in price
+proposals to respondents. This has the advantage of having a solid
+sample to understand things for one of the given prices, but will worsen
+the accuracy of the model, compared to the case, where prices would have
+been allowed to disperse.
+
+### Discrete variables
+
+frequency histogrames here. We will look at home some categorical
+variables are dispersed too.
+
+```{r hsize, warning=FALSE}
+apple %>%
+  ggplot( aes(x=hhsize)) +
+    geom_histogram(binwidth = 1, bins = 10, fill="#69b3a2", color="aquamarine4", alpha=0.9) +
+    ggtitle("Household size") +
+    theme_ipsum() +
+    geom_vline(aes(xintercept = mean(hhsize)), linetype = 2) + 
+    theme(
+      plot.title = element_text(size=15),axis.line = element_line(colour = "black", 
+                      size = 1, linetype = "solid"))
+
+
+apple %>%
+  ggplot(aes(x=hhsize, stat(density))) +
+    geom_histogram(binwidth = 1, bins = 10, fill="#69b3a2", color="aquamarine4", alpha=0.9) +
+    ggtitle("Household size") +
+    theme_ipsum() +
+    geom_vline(aes(xintercept = mean(hhsize)), linetype = 2) + 
+    theme(
+      plot.title = element_text(size=15),axis.line = element_line(colour = "black", 
+                      size = 1, linetype = "solid"))
+```
+
+```{r Educa, warning=FALSE}
+apple$educ = as.numeric(apple$educ)
+(tb.r <- fdt_cat(as.factor(apple$educ)))
+
+apple %>%
+  ggplot(aes(x=educ)) +
+    geom_histogram(binwidth = 1, bins = 10, fill="#69b3a2", color="aquamarine4", alpha=0.9) +
+    ggtitle("Years of education") +
+    theme_ipsum() +
+    geom_vline(aes(xintercept = mean(educ)), linetype = 2) + 
+    theme(
+      plot.title = element_text(size=15),axis.line = element_line(colour = "black", 
+                      size = 1, linetype = "solid"))
+
+
+apple %>%
+  ggplot(aes(x=educ, stat(density))) +
+    geom_histogram(binwidth = 1, bins = 10, fill="#69b3a2", color="aquamarine4", alpha=0.9) +
+    geom_density(fill="#69b3a2", color="#e9ecef", alpha=0.6) +
+    ggtitle("Years of education") +
+    theme_ipsum() +
+    geom_vline(aes(xintercept = mean(educ)), linetype = 2) + 
+    theme(
+      plot.title = element_text(size=15),axis.line = element_line(colour = "black", 
+                      size = 1, linetype = "solid"))
+```
+
+States categorical variables description
+
+source: <https://www.r-bloggers.com/2019/12/choropleth-map-in-ggplot2/>
+
+```{r states, warning=FALSE}
+states = as.data.frame(state.x77)
+states = states[-2,]
+
+data = apple %>% 
+  group_by(state) %>%
+  summarise(weight = table(state))
+
+states$pop = as.numeric(data$weight)/nrow(apple) 
+nrow(states)
+
+library(maps)
+states$region = tolower(rownames(states))
+states_map = map_data("state")
+
+fact_join = left_join(states_map, states, by = "region")
+ggplot(fact_join, aes(long, lat, group = group))+
+  geom_polygon(aes(fill = pop), color = "white")+
+  scale_fill_viridis_c(option = "C") 
+```
+
+### Response descriptives
+
+We will finally look at the demand of the two categories of apples, and
+get a first insight about how they relate to each other.
+
+This has little to do with the real demand, but it gives us a glimpse of
+how the experiment worked. In the experiment, we had the they were
+"fictionally" sold more. It's true however that, prices offered were not
+distributed as they were in real life, but their distribution was
+selected before hand.
+
+```{r asales, warning=FALSE}
+data1 = apple %>%
+      mutate(apple = "Regular", sales = reglbs) %>%
+      select(apple, sales)
+  
+data2 = apple %>%
+      mutate(apple = "Ecological", sales = ecolbs) %>%
+      select(apple, sales)
+  
+density = rbind(data1, data2)
+
+# Represent it
+density %>%
+    ggplot(aes(x=sales, fill=apple)) +
+    geom_density(color="#e9ecef", alpha=0.7, position = 'identity', bins = 100) +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+    theme_ipsum() +
+    labs(title="Density plot", 
+       subtitle="City Mileage Grouped by Number of cylinders",
+       caption="Source: mpg",
+       x="City Mileage",
+       fill="Type of apple")
+
+density %>%
+  ggplot( aes(x=apple, y=sales, fill=apple)) +
+    geom_boxplot() +
+    scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+    geom_jitter(color="black", size=0.4, alpha=0.9) +
+    theme_ipsum() +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+    ) +
+    ggtitle("A boxplot with jitter") +
+    xlab("")
+
+```
+
+The proportion of each group
+
+```{r categories plot, warning=FALSE}
+(data = apple %>%
+  group_by(class) %>%
+  summarise(weight = n()/nrow(apple), pvar = weight*(1-weight)/nrow(apple), upper = qnorm(0.95, weight, sqrt(pvar)), lower = qnorm(0.05, weight, sqrt(pvar))))
+
+bar = data_frame(
+  name = as.factor(data$class),
+  value = data$weight,
+  lower = data$lower,
+  upper = data$upper)
+
+ggplot(bar, aes(x=name, y=value)) + 
+  geom_bar(color = "blue", stat = "identity", fill = rgb(0.1,0.4,0.5,0.7)) + 
+  geom_errorbar(aes(x=name, ymin=lower, ymax= upper), width=0.4, colour="black", alpha=0.9, size=1.3) +
+  ggtitle("Household size") + 
+  theme_minimal() + 
+  labs(y="Frequency", x = "Number of members") + 
+  geom_text(aes(label=round(value * 100,digits=3)), position=position_dodge(width=0.9), vjust=-2.05,size=4)+
+    geom_text(aes(label=round(value * 100,digits=3)), position=position_dodge(width=0.9), vjust=-2.05,size=4.03)
+```
+
+Here we are interested in the amount of apples purchased and the
+proportion of each group. Therefore, the best options:
+
+-   density plots
+
+CATEGORICAL: BARCHART WITH ERRORS INCLUDED
+
+## Multivariate analysis
+
+### How price drives demand
+
+```{r salesVprice_income , warning=FALSE}
+incprice1 = apple %>%
+      mutate(Apple = "Regular", Quantity = reglbs, Price = regprc) %>%
+      select(Apple, Quantity, Price)
+  
+incprice2 = apple %>%
+      mutate(Apple = "Ecological", Quantity = ecolbs, Price = ecoprc) %>%
+      select(Apple, Quantity, Price)
+
+incprice = rbind(incprice1, incprice2)
+
+ggplot(incprice, aes(x = Price, y = Quantity, color = Apple)) + 
+    geom_point(size=1)  + 
+    geom_smooth(method=lm) +
+    theme_ipsum() +
+    labs(title="Quantity and Price", 
+       subtitle="Scatter plot with frequentist confidence interval across infinitestimal predictions",
+       x = "Price (USD)",
+       y = "Quantity (Pounds)",
+       caption="Pearson Correlation: -0.06086736",
+       fill="Type of apple")
+
+incIncome1 = apple %>%
+      mutate(Apple = "Regular", Quantity = reglbs, Income = incomepa) %>%
+      select(Apple, Quantity, Income)
+  
+incIncome2 = apple %>%
+      mutate(Apple = "Ecological", Quantity = ecolbs, Income = incomepa) %>%
+      select(Apple, Quantity, Income)
+
+incIncome = rbind(incIncome1, incIncome2)
+
+ggplot(incIncome, aes(x = Income, y = Quantity, color = Apple)) + 
+    geom_point(size=1)  + 
+    geom_smooth(method=lm) +
+    theme_ipsum() +
+    labs(title="Quantity and Income", 
+       subtitle="Scatter plot with frequentist confidence interval across infinitestimal predictions",
+       x = "Income (USD)",
+       y = "Quantity (Pounds)",
+       caption="Pearson Correlation: -0.007579515",
+       fill="Type of apple")
+```
+
+### Overall unilateral relationship
+
+### Numericals
+
+```{r num_correlation, echo=FALSE}
+library(reshape2)
+
+apply(apple, 2, class)
+
+categorical = apple %>%
+  dplyr::select(class, male, inseason, state)
+
+continuous = apple %>%
+  select_if(is.numeric) %>%
+  select(- male, - faminc, - logincomepa, - age, - adults)
+
+
+variable.names(continuous)
+cormat <- round(cor(continuous, method = "spearman", use = "pairwise.complete.obs"),2)
+head(cormat)
+melted_cormat <- melt(cormat)
+
+get_lower_tri<-function(cormat){
+  cormat[upper.tri(cormat)] <- NA
+  return(cormat)
+}
+
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+}
+
+upper_tri <- get_upper_tri(cormat)
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "black", high = "black", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 14, hjust = 1))+
+  theme(axis.text.y = element_text(vjust = 1, 
+                                   size = 14, hjust = 1))+
+  coord_fixed() + 
+  geom_text(aes(Var2, Var1, label = value), color = "white", size = 3) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks = element_blank())
+```
+
+To an extent we could use the correlation matrix to test for the
+randomness of "treatment" allocations. Fortunately, we see no apparent
+correlation of prices with other explanatory variables. We see a -0.12
+Pearson coefficient, which might be somewhat concerning depending on the
+variance of this statistics.
+
+We struggle to see any clarity around the association between prices and
+sales. We wonder if apple demand is very inelastic and might depend on
+people's preferences/features above anything else.
+
+We need external data to add here.
+
+### Categoricals
+
+```{r gender, warning=FALSE}
+library(gmodels)
+y = CrossTable(x = apple$class, y = apple$male)
+y$prop.col
+```
+
+```{r in_season, warning=FALSE}
+x = CrossTable(x = apple$class, y = apple$inseason)
+x$prop.row
+
+```
+
+### Maybe you can do a chart here
+
+```{r inseason, warning=FALSE}
+x = CrossTable(x = apple$class, y = apple$numlt5)
+x = CrossTable(x = apple$class, y = apple$numlt5)
+
+x$prop.row
+
+```
+
+What we are most interested in is the row proportion for conservative
+cars for each model. The row proportions tell us that 0.654 (65 percent)
+of SE cars are colored conservatively, in comparison to 0.696 (70
+percent) of SEL cars, and 0.653 (65 percent) of SES. These differences
+are relatively small, which suggests that there are no substantial
+differences in the types of colors chosen by model of car. The
+Chi-square values refer to the cell's contribution in the Pearson's
+Chi-squared test for independence between two variables. This test
+measures how likely it is that the difference in cell counts in the
+table is due to chance alone. If the probability is very low, it
+provides strong evidence that the two variables are associated. You can
+obtain the Chi-squared test results by adding an additional parameter
+specifying chisq = TRUE when calling the CrossTable() function. In our
+case, the probability is about 93 percent, suggesting that it is very
+likely that the variations in cell count are due to chance alone, and
+not due to a true association between model and color.
+
+```{r cat_correlation, echo=FALSE}
+categorical2 = apply(categorical, 2, as.numeric)
+library(reshape2)
+cormat <- round(cor(categorical2, method = "spearman", use = "pairwise.complete.obs"),2)
+head(cormat)
+melted_cormat <- melt(cormat)
+
+get_lower_tri<-function(cormat){
+  cormat[upper.tri(cormat)] <- NA
+  return(cormat)
+}
+
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+}
+
+upper_tri <- get_upper_tri(cormat)
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "black", high = "black", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Spearman\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 14, hjust = 1))+
+  theme(axis.text.y = element_text(vjust = 1, 
+                                   size = 14, hjust = 1))+
+  coord_fixed() + 
+  geom_text(aes(Var2, Var1, label = value), color = "white", size = 3) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks = element_blank())
+```
+
+### Numerical-categoricals
+
+### Drivers: unilateral and mutivariate relationship quantification with apple choice
+
+```{r sales, warning=FALSE}
+incprice1 = apple %>%
+      mutate(Apple = "Regular", Quantity = reglbs, Price = regprc) %>%
+      select(Apple, Quantity, Price)
+  
+incprice2 = apple %>%
+      mutate(Apple = "Ecological", Quantity = ecolbs, Price = ecoprc) %>%
+      select(Apple, Quantity, Price)
+
+incprice = rbind(incprice1, incprice2)
+
+ggplot(incprice, aes(x = Price, y = Quantity, color = Apple)) + 
+    geom_point(size=1)  + 
+    geom_smooth(method=lm) +
+    theme_ipsum()
+
+cor(incprice$Price, incprice$Quantity)
+
+incIncome1 = apple %>%
+      mutate(Apple = "Regular", Quantity = reglbs, Income = incomepa) %>%
+      select(Apple, Quantity, Income)
+  
+incIncome2 = apple %>%
+      mutate(Apple = "Ecological", Quantity = ecolbs, Income = incomepa) %>%
+      select(Apple, Quantity, Income)
+
+incIncome = rbind(incIncome1, incIncome2)
+
+ggplot(incIncome, aes(x = Income, y = Quantity, color = Apple)) + 
+    geom_point(size=1)  + 
+    geom_smooth(method=lm) +
+    theme_ipsum()
+
+cor(incIncome$Income, incIncome$Quantity)
+```
+
+Do this cross-variable tabulation with dplyr
+
+### Relationship with the US
+
+```{r statesS, warning=FALSE}
+states = as.data.frame(state.x77)
+states = states[-2,]
+
+data = apple %>% 
+  group_by(state) %>%
+  summarise(demand = mean(total), eco = mean(ecolbs))
+
+states$pop = data$demand
+states$eco = data$eco
+
+nrow(states)
+
+library(maps)
+states$region = tolower(rownames(states))
+states_map = map_data("state")
+
+fact_join = left_join(states_map, states, by = "region")
+ggplot(fact_join, aes(long, lat, group = group))+
+  geom_polygon(aes(fill = pop), color = "white")+
+  scale_fill_viridis_c(option = "E") 
+
+ggplot(fact_join, aes(long, lat, group = group))+
+  geom_polygon(aes(fill = eco), color = "white")+
+  scale_fill_viridis_c(option = "E") +
+  theme_classic()
+```
+
+We see big differences from some states to others (Highests in Montana
+and Arkansas). Assuming a fully random allocation of prices this is
+relevant insight, that can be extrapolated to apple consumption for each
+state. Hopefully we will be able to get a quantification of this
+controlling as much as we can for the effect of price.
+
+Although the pattern is not fully consistent in this case, we see
+Ecological apples have more potential on average at the east coast of
+the US.
+
+We will run an small regression to see whether it's any significant
+value. For simplicity, we will not proceed with the inclusion of states
+in the final regression model.
+
+```{r TBC, echo = FALSE, warning = FALSE}
+
+regression = apple %>% 
+  select(Ecological, state)
+
+Trainn <- createDataPartition(regression$Ecological, p=0.9, list=FALSE)
+trainingn <- regression[Trainn,]
+testingn <- regression[-Trainn,]
+ctrl <- trainControl(method = "repeatedcv", number = 10, savePredictions = TRUE)
+logit = train(Ecological ~., data=trainingn,  method = "glm",  family = "binomial", trControl = ctrl, tuneLength = 5)
+summary(logit)
+
+probsTest <- predict(logit, testingn)
+mlc = confusionMatrix(probsTest, testingn$Ecological)
+```
+
+# Advanced analytics: Building a classification model
+
+```{r RFst, warning=FALSE, message=FALSE}
+
+tic()
+
+cl <- makePSOCKcluster(7)
+registerDoParallel(cl)
+
+Train <- createDataPartition(apple$class, p=0.8, list=FALSE)
+training <- apple[Train,]
+testing <- apple[-Train,]
+ctrl <- trainControl(method = "repeatedcv", number = 10, savePredictions = TRUE)
+
+RF = train(class ~., data=training, method="rf", trControl = ctrl, tuneLength = 5)
+stopCluster(cl)
+varImp(RF)
+
+pred = predict(RF, newdata=testing, type="raw")
+table(pred)
+toc()
+
+
+
+
+
+```
+We can see that the most important variable is the only ecological category followed by the weight of regular apples.
+
+Now that we have the model, we can calculate the confusion matrix. This is a matrix that represents the predicted categories in comparison with the reference ones. So, the first row represents how the first predicted category actually corresponds to the real data, and so on. Obviously, the best model would be the one that has a diagonal confusion matrix, meaning that the predictions matched the real data.
+
+The sensitivity represents the number of events in the reference set that are actually predicted correctly for any given category. For the category both, we saw that there were 4 predicted correctly and 0 misplaced, therefore the sensitivity is 1.
+
+Other interesting value is the specificity which measures the proportion of events that were classified as "non-event" for any given category which respect to the total. So for example, in the case of "both" a total of 0 were misplaced from the 125 total, which means (125-0)/125=1 (100%) were correctly not associated with "both", but with another category (not necessarily the correct one).
+
+The detection rate measures the proportion of correctly classified ones for any given category from the total size of testing.
+
+One statistic we will look at is the accuracy which is the percentage of number of correctly classified instances among all other instances.
+
+Finally, the kappa stands for Cohen's kappa coefficient which is a statistic that is used to measure inter-rater reliability for categorical variables. It is generally thought to be a more robust measure than simple percent agreement calculation, as it takes into account the possibility of the agreement occurring by chance. If kappa is negative, it means that the model is worse than random. The best kappa is when kappa=1.
+
+In this case for RF, we can see that the accuracy and kappa are actually maximum, so this prediction model is very good.
+```{r RFst confusion matrix, warning=FALSE, message=FALSE}
+
+confusionMatrix(reference = testing$class, data = pred, mode = "everything", positive = "1")
+
+```
+The next model we will look at is using linear support vector machines. An SVM model is a representation of the examples as points in space, mapped so that the examples of the separate categories are divided by a clear gap that is as wide as possible. New examples are then mapped into that same space and predicted to belong to a category based on the side of the gap on which they fall
+
+```{r vectormachineslinear1, warning=FALSE, message=FALSE}
+
+tic()
+
+c2 <- makePSOCKcluster(7)
+registerDoParallel(c2)
+
+Train <- createDataPartition(apple$class, p=0.8, list=FALSE)
+training <- apple[Train,]
+testing <- apple[-Train,]
+ctrl <- trainControl(method = "repeatedcv", number = 10, savePredictions = TRUE)
+
+library(kernlab)
+svmlinear = train(class ~., data=training, method="svmLinear", trControl = ctrl, tuneLength = 5, importance=TRUE)
+stopCluster(c2)
+ls(svmlinear)
+#not possible to calculate variable importance for support vector machines with caret "varImp(RFvec)"
+
+
+
+predvec = predict(svmlinear, newdata=testing)
+table(predvec)
+
+toc()
+
+confusionMatrix(reference = testing$class, data = predvec, mode = "everything", positive = "1")
+
+```
+We cannot see the most important variables in this case because caret doesn't allow it. It's more like a black box with no interpretation. In this case the confusion matrix is diagonal, which means the model classified correctly 100% of the times, being a very good model. Therefore, the accuracy and kappa are all 1 for obvious reasons.
+
+The next model we will analyze is the so called "naive_bayes". These models are a family of simple "probabilistic classifiers" based on applying Bayes' theorem with strong (naïve) independence assumptions between the features. They are among the simplest Bayesian network models and thus don't achieve spectacular accuracy but can be combined with other methods to reach better performance.
+
+Their advantage is that they are highly scalable, requiring a number of parameters linear in the number of variables (features/predictors) in a learning problem.
+
+```{r bayes, warning=FALSE, message=FALSE}
+tic()
+
+c2 <- makePSOCKcluster(7)
+registerDoParallel(c2)
+
+Train <- createDataPartition(apple$class, p=0.8, list=FALSE)
+training <- apple[Train,]
+testing <- apple[-Train,]
+ctrl <- trainControl(method = "repeatedcv", number = 10, savePredictions = TRUE)
+
+bayes = train(class ~., data=training, method="naive_bayes", trControl = ctrl, tuneLength = 2)
+stopCluster(c2)
+
+#no varImp for bayes
+
+predbayes = predict(bayes, newdata=testing)
+table(predbayes)
+toc()
+
+confusionMatrix(reference = testing$class, data = predbayes, mode = "everything", positive = "1")
+
+```
+In this case the accuracy and kappa are good, 0.8 and 0.66 respectively. Not the best model, but also a fair results. We should also keep in mind that these algorithm runs faster than the others, so for bigger problems it might give decent results with less computation time.
+
+Finally, we will explore the gradient boosted trees (xgb). These methods aim to minimize a certain loss function. For that, they start with an initial estimation and calculate this residuals (the loss function) for each of the categories. Then, they use trees to predict the residuals one just obtained. These residuals are now used to go backwards and predict the actual category one wants. After this, one can re-calculate the residuals and continue this process until a certain tolerance is achieved.
+
+```{r xgbtrees, warning=FALSE, message=FALSE}
+
+tic()
+
+c3 <- makePSOCKcluster(7)
+registerDoParallel(c3)
+
+Train <- createDataPartition(apple$class, p=0.8, list=FALSE)
+training <- apple[Train,]
+testing <- apple[-Train,]
+ctrl <- trainControl(method = "repeatedcv", number = 10, savePredictions = TRUE)
+
+xgb = train(class ~., data=training, method="xgbTree", trControl = ctrl, tuneLength = 5)
+stopCluster(c3)
+varImp(xgb)
+
+predxgb = predict(xgb, newdata=testing)
+
+table(predxgb)
+
+toc()
+
+# Compute the confusion matrix
+confusionMatrix(reference = testing$class, data = predxgb, mode = "everything",
+positive = "1")
+
+
+```
+
+We can see that gradient boosting is one of the best algorithms, with an
+accuracy of 1 and the confusion matrix being totally diagonal, so no
+element in prediction was misplaced. However, it is also the most time
+consuming, taking almost 6 minutes and running in parallel! On the other hand, one doesn't get much info from the variables
+
+We can compare all the models and summarize this information in the following plots.
+
+```{r comparacionmodelos, warning=FALSE, message=FALSE}
+# Compare model performances using resample()
+models_compare = resamples(list(VSM = svmlinear, XGB = xgb, RFs = RF,
+Bayes = bayes))
+# Summary of the models performances
+summary(models_compare)
+
+
+# Draw box plots to compare models
+scales = list(x = list(relation = "free"), y = list(relation = "free"))
+bwplot(models_compare, scales = scales)
+```
+With this plot we can immediately see that SVM, RF and XGB achieve the best results with maximum accuracy and kappa (thus some of them being very costly, such as XGB). On the other hand, the naive_bayes gives worse results, although decent ones and it's faster so it could be generalized onto bigger problems.
+
+
+We can now study a binary variable, Ecological yes or no, in the same way and use an ensemble (only available for binary variables)
+
+```{r binarystack, warning=FALSE, message=FALSE}
+
+c2 <- makePSOCKcluster(7)
+registerDoParallel(c2)
+
+Train2 <- createDataPartition(apple$Ecological, p=0.8, list=FALSE)
+training2 <- apple[Train2,]
+testing2 <- apple[-Train2,]
+
+trainControl = trainControl(method = "repeatedcv", number = 10, repeats = 3,
+savePredictions = TRUE, classProbs = TRUE)
+
+# Run multiple algorithms in one call.
+
+algorithmList = c("rf", "naive_bayes", "earth")
+set.seed(100)
+#this variable has 0 and 1 and those are not valid names, use make.names
+models = caretList(make.names(Ecological) ~ ., data = training2, trControl = trainControl,
+methodList = algorithmList)
+results = resamples(models)
+summary(results)
+stack = caretStack(models, method = "glm")
+stopCluster(c2)
+# Box plots to compare models
+scales = list(x = list(relation = "free"), y = list(relation = "free"))
+bwplot(results, scales = scales)
+#combined model
+print(stack)
+```
+We can see that RF and earth give perfect results whereas naive_bayes gives very good results but not perfect. The ensembled model gives perfect predictions with accuracy and kappa=1
+
+# CONCLUSIONS
+
+As predicted by basic economics, the own price effect is negative (and
+strong) and the cross price effect is positive (and strong). While the
+main dependent variable, ecolbs, piles up at zero, estimating a linear
+model is still worthwhile. Interestingly, because the survey design
+induces a strong positive correlation between the prices of eco-labelled
+and regular apples, there is an omitted variable problem if either of
+the price variables is dropped from the demand equation.
